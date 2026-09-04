@@ -113,7 +113,7 @@ To find the post for a given file, `list_posts` and match on `source_path`
 
 ## Comments
 
-`list_comments(blog_id, status="pending")` finds anything awaiting moderation.
+`list_comments(blog_id, status="PENDING")` finds anything awaiting moderation.
 `moderate_comment` does `approve` / `spam` / `remove_content` / `delete`;
 `delete` is not recoverable, so confirm it first.
 

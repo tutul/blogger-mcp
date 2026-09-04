@@ -72,8 +72,17 @@ def _service():
         raise ToolError(str(exc)) from exc
 
 
-def _execute(request) -> dict[str, Any]:
-    """Run a googleapiclient request, turning API errors into readable ones."""
+def _call(method, **params) -> dict[str, Any]:
+    """Build and run a Blogger API request, turning failures into ToolError.
+
+    Both steps sit inside the handler on purpose: googleapiclient validates
+    enum arguments client-side while the request is *built*, and that TypeError
+    would otherwise reach the caller as an opaque "error executing tool".
+    """
+    try:
+        request = method(**params)
+    except TypeError as exc:
+        raise ToolError(f"invalid argument for the Blogger API: {exc}") from exc
     try:
         return request.execute() or {}
     except HttpError as exc:
@@ -153,7 +162,10 @@ def list_blogs() -> dict[str, Any]:
     Use this to discover a `blog_id` when you do not already have one. Every
     other tool requires the caller to pass `blog_id` explicitly.
     """
-    resp = _execute(_service().blogs().listByUser(userId="self", view=ADMIN))
+    # No view=ADMIN here: blogs.listByUser rejects it with HTTP 400 even though
+    # the API's own discovery document lists ADMIN as a valid enum value. Every
+    # other resource accepts it. The default view returns what we need anyway.
+    resp = _call(_service().blogs().listByUser, userId="self")
     items = [
         {
             "blog_id": b.get("id"),
@@ -177,8 +189,10 @@ def get_blog(blog_id: str | None = None, url: str | None = None) -> dict[str, An
     if bool(blog_id) == bool(url):
         raise ToolError("pass exactly one of blog_id or url")
     svc = _service().blogs()
-    req = svc.getByUrl(url=url, view=ADMIN) if url else svc.get(blogId=blog_id, view=ADMIN)
-    b = _execute(req)
+    if url:
+        b = _call(svc.getByUrl, url=url, view=ADMIN)
+    else:
+        b = _call(svc.get, blogId=blog_id, view=ADMIN)
     return {
         "blog_id": b.get("id"),
         "name": b.get("name"),
@@ -205,8 +219,8 @@ def list_posts(
     labels: str | None = None,
     start_date: str | None = None,
     end_date: str | None = None,
-    order_by: Literal["published", "updated"] = "published",
-    sort: Literal["descending", "ascending"] = "descending",
+    order_by: Literal["PUBLISHED", "UPDATED"] = "PUBLISHED",
+    sort: Literal["DESCENDING", "ASCENDING"] = "DESCENDING",
     max_results: int = 20,
     page_token: str | None = None,
     fetch_bodies: bool = False,
@@ -238,7 +252,7 @@ def list_posts(
     if page_token:
         params["pageToken"] = page_token
 
-    resp = _execute(_service().posts().list(**params))
+    resp = _call(_service().posts().list, **params)
     build = _post_detail if fetch_bodies else _post_summary
     return _listing(resp, [build(p) for p in resp.get("items", [])])
 
@@ -250,10 +264,13 @@ def get_post(blog_id: str, post_id: str) -> dict[str, Any]:
     Always call this before `update_post` so you are editing against the
     current content rather than a stale copy.
     """
-    post = _execute(
-        _service().posts().get(
-            blogId=blog_id, postId=post_id, view=ADMIN, fetchBody=True, maxComments=0
-        )
+    post = _call(
+        _service().posts().get,
+        blogId=blog_id,
+        postId=post_id,
+        view=ADMIN,
+        fetchBody=True,
+        maxComments=0,
     )
     return _post_detail(post)
 
@@ -267,8 +284,8 @@ def search_posts(
     Note this only covers live posts; drafts are not indexed. To find a draft,
     use `list_posts` with `status="DRAFT"`.
     """
-    resp = _execute(
-        _service().posts().search(blogId=blog_id, q=query, fetchBodies=fetch_bodies)
+    resp = _call(
+        _service().posts().search, blogId=blog_id, q=query, fetchBodies=fetch_bodies
     )
     build = _post_detail if fetch_bodies else _post_summary
     return _listing(resp, [build(p) for p in resp.get("items", [])])
@@ -313,10 +330,13 @@ def create_post(
     if reader_comments:
         body["readerComments"] = reader_comments
 
-    post = _execute(
-        _service().posts().insert(
-            blogId=blog_id, body=body, isDraft=draft, fetchBody=False, fetchImages=False
-        )
+    post = _call(
+        _service().posts().insert,
+        blogId=blog_id,
+        body=body,
+        isDraft=draft,
+        fetchBody=False,
+        fetchImages=False,
     )
     result = _post_summary(post)
     result["is_draft"] = draft
@@ -372,25 +392,26 @@ def update_post(
         html_body = _render(content, content_format)
         body["content"] = html_body
         # Read the current post so unrelated customMetaData survives the write.
-        existing = _execute(
-            _service().posts().get(
-                blogId=blog_id, postId=post_id, view=ADMIN, fetchBody=False
-            )
+        existing = _call(
+            _service().posts().get,
+            blogId=blog_id,
+            postId=post_id,
+            view=ADMIN,
+            fetchBody=False,
         )
         body["customMetaData"] = content_mod.merge_sync_meta(
             existing.get("customMetaData"), html_body, source_path
         )
 
-    post = _execute(
-        _service().posts().patch(
-            blogId=blog_id,
-            postId=post_id,
-            body=body,
-            publish=publish,
-            fetchBody=False,
-            fetchImages=False,
-            maxComments=0,
-        )
+    post = _call(
+        _service().posts().patch,
+        blogId=blog_id,
+        postId=post_id,
+        body=body,
+        publish=publish,
+        fetchBody=False,
+        fetchImages=False,
+        maxComments=0,
     )
     result = _post_summary(post)
     result["updated_fields"] = sorted(body)
@@ -413,7 +434,7 @@ def publish_post(
     params: dict[str, Any] = {"blogId": blog_id, "postId": post_id}
     if publish_date:
         params["publishDate"] = publish_date
-    post = _execute(_service().posts().publish(**params))
+    post = _call(_service().posts().publish, **params)
     return _post_summary(post)
 
 
@@ -424,24 +445,23 @@ def revert_post(blog_id: str, post_id: str) -> dict[str, Any]:
     The content is kept; only its visibility changes. This is the safe way to
     pull a post down.
     """
-    post = _execute(_service().posts().revert(blogId=blog_id, postId=post_id))
+    post = _call(_service().posts().revert, blogId=blog_id, postId=post_id)
     return _post_summary(post)
 
 
 @mcp.tool(annotations=_rw(destructive=True, idempotent=True))
-def delete_post(
-    blog_id: str, post_id: str, permanent: bool = False
-) -> dict[str, Any]:
+def delete_post(blog_id: str, post_id: str, permanent: bool = False) -> dict[str, Any]:
     """Delete a post. Moves it to the trash by default, which is recoverable.
 
     `permanent=True` destroys the post with no way back — only pass it when a
     human has explicitly asked for permanent deletion. If the goal is just to
     take a post off the blog, prefer `revert_post`.
     """
-    _execute(
-        _service().posts().delete(
-            blogId=blog_id, postId=post_id, useTrash=not permanent
-        )
+    _call(
+        _service().posts().delete,
+        blogId=blog_id,
+        postId=post_id,
+        useTrash=not permanent,
     )
     return {
         "post_id": post_id,
@@ -464,7 +484,7 @@ def delete_post(
 @mcp.tool(annotations=_ro())
 def list_pages(
     blog_id: str,
-    status: Literal["LIVE", "DRAFT"] | None = None,
+    status: Literal["LIVE", "DRAFT", "SOFT_TRASHED"] | None = None,
     fetch_bodies: bool = False,
     max_results: int = 20,
     page_token: str | None = None,
@@ -484,7 +504,7 @@ def list_pages(
         params["status"] = status
     if page_token:
         params["pageToken"] = page_token
-    resp = _execute(_service().pages().list(**params))
+    resp = _call(_service().pages().list, **params)
     items = []
     for p in resp.get("items", []):
         item = _page_summary(p)
@@ -497,7 +517,7 @@ def list_pages(
 @mcp.tool(annotations=_ro())
 def get_page(blog_id: str, page_id: str) -> dict[str, Any]:
     """Fetch one static page in full, including its HTML body."""
-    page = _execute(_service().pages().get(blogId=blog_id, pageId=page_id, view=ADMIN))
+    page = _call(_service().pages().get, blogId=blog_id, pageId=page_id, view=ADMIN)
     result = _page_summary(page)
     result["content"] = page.get("content")
     return result
@@ -521,7 +541,7 @@ def create_page(
         "title": title,
         "content": _render(content, content_format),
     }
-    page = _execute(_service().pages().insert(blogId=blog_id, body=body, isDraft=draft))
+    page = _call(_service().pages().insert, blogId=blog_id, body=body, isDraft=draft)
     result = _page_summary(page)
     result["is_draft"] = draft
     return result
@@ -547,10 +567,12 @@ def update_page(
         body["title"] = title
     if content is not None:
         body["content"] = _render(content, content_format)
-    page = _execute(
-        _service().pages().patch(
-            blogId=blog_id, pageId=page_id, body=body, publish=publish
-        )
+    page = _call(
+        _service().pages().patch,
+        blogId=blog_id,
+        pageId=page_id,
+        body=body,
+        publish=publish,
     )
     result = _page_summary(page)
     result["updated_fields"] = sorted(body)
@@ -558,12 +580,13 @@ def update_page(
 
 
 @mcp.tool(annotations=_rw(destructive=True, idempotent=True))
-def delete_page(
-    blog_id: str, page_id: str, permanent: bool = False
-) -> dict[str, Any]:
+def delete_page(blog_id: str, page_id: str, permanent: bool = False) -> dict[str, Any]:
     """Delete a static page. Moves it to the trash by default."""
-    _execute(
-        _service().pages().delete(blogId=blog_id, pageId=page_id, useTrash=not permanent)
+    _call(
+        _service().pages().delete,
+        blogId=blog_id,
+        pageId=page_id,
+        useTrash=not permanent,
     )
     return {"page_id": page_id, "deleted": True, "permanent": permanent}
 
@@ -577,13 +600,13 @@ def delete_page(
 def list_comments(
     blog_id: str,
     post_id: str | None = None,
-    status: Literal["live", "emptied", "pending", "spam"] | None = None,
+    status: Literal["LIVE", "EMPTIED", "PENDING", "SPAM"] | None = None,
     max_results: int = 20,
     page_token: str | None = None,
 ) -> dict[str, Any]:
     """List comments on one post, or across the whole blog if `post_id` is omitted.
 
-    Use `status="pending"` to find comments waiting for moderation.
+    Use `status="PENDING"` to find comments waiting for moderation.
     """
     params: dict[str, Any] = {
         "blogId": blog_id,
@@ -597,9 +620,9 @@ def list_comments(
 
     svc = _service().comments()
     if post_id:
-        resp = _execute(svc.list(postId=post_id, view=ADMIN, **params))
+        resp = _call(svc.list, postId=post_id, view=ADMIN, **params)
     else:
-        resp = _execute(svc.listByBlog(**params))
+        resp = _call(svc.listByBlog, **params)
 
     items = [
         {
@@ -637,13 +660,13 @@ def moderate_comment(
     svc = _service().comments()
     args = {"blogId": blog_id, "postId": post_id, "commentId": comment_id}
     if action == "approve":
-        result = _execute(svc.approve(**args))
+        result = _call(svc.approve, **args)
     elif action == "spam":
-        result = _execute(svc.markAsSpam(**args))
+        result = _call(svc.markAsSpam, **args)
     elif action == "remove_content":
-        result = _execute(svc.removeContent(**args))
+        result = _call(svc.removeContent, **args)
     elif action == "delete":
-        _execute(svc.delete(**args))
+        _call(svc.delete, **args)
         result = {}
     else:  # pragma: no cover - Literal already constrains this
         raise ToolError(f"unknown action {action!r}")
@@ -668,9 +691,7 @@ def get_pageviews(
     Blogger only exposes three coarse buckets and the numbers are approximate —
     treat them as a rough signal, not analytics. There is no per-post breakdown.
     """
-    resp = _execute(
-        _service().pageViews().get(blogId=blog_id, range=[time_range])
-    )
+    resp = _call(_service().pageViews().get, blogId=blog_id, range=[time_range])
     return {
         "blog_id": resp.get("blogId", blog_id),
         "counts": [
