@@ -51,7 +51,7 @@ def _rw(destructive: bool, idempotent: bool = False) -> ToolAnnotations:
     )
 
 
-# Admin view is what surfaces drafts, the `status` field and customMetaData.
+# Admin view is what surfaces drafts and the `status` field.
 # It requires the authorized account to be an admin of the blog, which is the
 # case for the blogs this server is meant to manage.
 ADMIN = "ADMIN"
@@ -124,7 +124,6 @@ def _post_summary(post: dict[str, Any]) -> dict[str, Any]:
 def _post_detail(post: dict[str, Any]) -> dict[str, Any]:
     detail = _post_summary(post)
     detail["content"] = post.get("content")
-    detail["sync_metadata"] = content_mod.sync_meta_of(post)
     if post.get("titleLink"):
         detail["title_link"] = post["titleLink"]
     if post.get("readerComments"):
@@ -299,7 +298,6 @@ def create_post(
     content_format: ContentFormat = "html",
     labels: list[str] | None = None,
     draft: bool = True,
-    source_path: str | None = None,
     reader_comments: Literal[
         "ALLOW", "DONT_ALLOW_SHOW_EXISTING", "DONT_ALLOW_HIDE_EXISTING"
     ]
@@ -315,28 +313,29 @@ def create_post(
     it in paragraphs. There is no Markdown support and no image upload: any
     <img> in the HTML must already point at a public absolute URL.
 
-    `source_path` records where the content came from in the post's
-    customMetaData, so a later sync can tell whether the source has changed.
+    Blogger cannot store per-post metadata of your own (its `customMetaData`
+    field silently discards writes), so there is no way to record which local
+    file a post came from. Track that outside this server if you need it.
     """
     html_body = _render(content, content_format)
     body: dict[str, Any] = {
         "kind": "blogger#post",
         "title": title,
         "content": html_body,
-        "customMetaData": content_mod.merge_sync_meta(None, html_body, source_path),
     }
     if labels:
         body["labels"] = labels
     if reader_comments:
         body["readerComments"] = reader_comments
 
+    # Do not pass fetchBody/fetchImages here. They read as response-shaping
+    # options, but Blogger applies fetchBody=False to the write itself and
+    # blanks the post body — verified against the live API.
     post = _call(
         _service().posts().insert,
         blogId=blog_id,
         body=body,
         isDraft=draft,
-        fetchBody=False,
-        fetchImages=False,
     )
     result = _post_summary(post)
     result["is_draft"] = draft
@@ -356,7 +355,6 @@ def update_post(
     content: str | None = None,
     content_format: ContentFormat = "html",
     labels: list[str] | None = None,
-    source_path: str | None = None,
     reader_comments: Literal[
         "ALLOW", "DONT_ALLOW_SHOW_EXISTING", "DONT_ALLOW_HIDE_EXISTING"
     ]
@@ -389,29 +387,15 @@ def update_post(
         body["readerComments"] = reader_comments
 
     if content is not None:
-        html_body = _render(content, content_format)
-        body["content"] = html_body
-        # Read the current post so unrelated customMetaData survives the write.
-        existing = _call(
-            _service().posts().get,
-            blogId=blog_id,
-            postId=post_id,
-            view=ADMIN,
-            fetchBody=False,
-        )
-        body["customMetaData"] = content_mod.merge_sync_meta(
-            existing.get("customMetaData"), html_body, source_path
-        )
+        body["content"] = _render(content, content_format)
 
+    # fetchBody=False here silently destroys the post body (see create_post).
     post = _call(
         _service().posts().patch,
         blogId=blog_id,
         postId=post_id,
         body=body,
         publish=publish,
-        fetchBody=False,
-        fetchImages=False,
-        maxComments=0,
     )
     result = _post_summary(post)
     result["updated_fields"] = sorted(body)
@@ -451,11 +435,15 @@ def revert_post(blog_id: str, post_id: str) -> dict[str, Any]:
 
 @mcp.tool(annotations=_rw(destructive=True, idempotent=True))
 def delete_post(blog_id: str, post_id: str, permanent: bool = False) -> dict[str, Any]:
-    """Delete a post. Moves it to the trash by default, which is recoverable.
+    """Delete a post. Treat this as irreversible and confirm with a human first.
 
-    `permanent=True` destroys the post with no way back — only pass it when a
-    human has explicitly asked for permanent deletion. If the goal is just to
-    take a post off the blog, prefer `revert_post`.
+    `useTrash` is sent unless `permanent=True`, but it buys nothing you can act
+    on: a deleted post returns 404 and never shows up in a SOFT_TRASHED listing
+    (verified against the live API). Whether Blogger's own web UI can still
+    restore it is not something the API can tell you.
+
+    If the goal is to take a post off the public blog, use `revert_post`
+    instead — it keeps the content and is trivially undone by publishing again.
     """
     _call(
         _service().posts().delete,
@@ -470,8 +458,9 @@ def delete_post(blog_id: str, post_id: str, permanent: bool = False) -> dict[str
         "note": (
             "Permanently deleted."
             if permanent
-            else "Moved to trash; recoverable from the Blogger UI or by listing "
-            "posts with status='SOFT_TRASHED'."
+            else "Deleted with useTrash. The API cannot retrieve it afterwards "
+            "and it will not appear under status='SOFT_TRASHED'; only the "
+            "Blogger web UI might still have it."
         ),
     }
 
@@ -581,7 +570,7 @@ def update_page(
 
 @mcp.tool(annotations=_rw(destructive=True, idempotent=True))
 def delete_page(blog_id: str, page_id: str, permanent: bool = False) -> dict[str, Any]:
-    """Delete a static page. Moves it to the trash by default."""
+    """Delete a static page. Treat this as irreversible (see `delete_post`)."""
     _call(
         _service().pages().delete,
         blogId=blog_id,

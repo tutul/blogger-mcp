@@ -30,6 +30,18 @@ before you build a workflow on top of this:
   across a blog means patching every post that carries it.
 - **No posting or replying to comments.** Moderation only.
 - **No Markdown.** Content is raw HTML (this server can also wrap plain text).
+- **No per-post metadata of your own.** The `customMetaData` field exists in
+  the API schema and is documented as "The JSON meta-data for the Post", but
+  Blogger discards writes to it — the value is already null in the insert
+  response. There is no place to record which local file produced a post.
+- **No recoverable trash.** `posts.delete` accepts `useTrash`, but a post
+  deleted that way returns 404 on the next read and never appears under
+  `status=SOFT_TRASHED`. Treat every delete as final and use `revert_post` when
+  you only want a post off the public blog.
+
+Several of these were found by running against a live blog; the reference
+documentation does not mention them. See the git history for the isolation
+tests.
 
 ## Setup
 
@@ -121,17 +133,16 @@ which blog it is operating on. `list_blogs` exists to discover ids, not as a
 required first step.
 
 **Writes are safe by default.** `create_post` and `create_page` produce drafts.
-Publishing is always a separate, explicit `publish_post` call. Deletes go to
-the trash unless `permanent=True` is passed. The intent is that "organize a
-document" and "put it on the public internet" are never the same action.
+Publishing is always a separate, explicit `publish_post` call. The intent is
+that "organize a document" and "put it on the public internet" are never the
+same action. Deleting is the one thing this server cannot make safe — Blogger's
+trash is not reachable through the API — so `delete_post` is documented as
+final and `revert_post` is the reversible way to take a post down.
 
-**Sync metadata lives in `customMetaData`.** Blogger gives each post an opaque
-JSON string field that is never rendered on the page. On every write this
-server records, under a `blogger_mcp` key, the source file path (if you pass
-`source_path`), a SHA-256 of the HTML it wrote, and a timestamp. That gives a
-stable link between a local file and its published post, so a later run can
-tell whether the source has drifted — without a separate mapping file. Existing
-metadata outside that key is preserved.
+**No `fetchBody` on writes.** `fetchBody` reads like a response-shaping option,
+and it is on `posts.get`. On `posts.insert` and `posts.patch`, passing
+`fetchBody=False` makes Blogger blank the post body. This server never sends it
+on a write. Do not add it back.
 
 ## Agent guidance (the Skill)
 

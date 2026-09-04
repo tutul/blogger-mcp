@@ -28,8 +28,8 @@ Never create and publish in one motion. The two steps are separate on purpose.
 
 1. **Check the content for local image paths first** — see below. Fix this
    before creating anything.
-2. `create_post(blog_id, title, content, content_format=..., labels=[...],
-   source_path=...)` — this creates a **draft**. Leave `draft=True`.
+2. `create_post(blog_id, title, content, content_format=..., labels=[...])` —
+   this creates a **draft**. Leave `draft=True`.
 3. Report back the post id and title, and tell the user it is a draft they can
    preview in the Blogger UI.
 4. Wait for the user to say go.
@@ -82,29 +82,18 @@ Two traps:
 Prefer `revert_post` — it takes the post off the public blog but keeps
 everything, and is trivially undone by publishing again.
 
-Use `delete_post` only when the user actually wants it gone. It goes to the
-trash by default (recoverable; find it with `list_posts(status="SOFT_TRASHED")`).
-Pass `permanent=True` **only** when the user has explicitly asked for permanent
-deletion — there is no undo.
+Use `delete_post` only when the user actually wants it gone, and confirm first.
+There is no working undo: even the default `useTrash` delete returns 404 on the
+next read and never appears under `status="SOFT_TRASHED"`. `permanent=True`
+skips the trash entirely. Either way, treat a delete as final.
 
-## Syncing local files to a blog
+## There is no way to link a post back to a local file
 
-Each write records bookkeeping in the post's `customMetaData`, readable as
-`sync_metadata` on `get_post`:
-
-```json
-{"source_path": "notes/rust-async.html",
- "content_sha256": "…", "synced_at": "2026-09-04T09:43:58+00:00"}
-```
-
-Pass `source_path` on every `create_post` / `update_post` that comes from a
-file. To decide whether a file needs re-pushing, render its content to the HTML
-you would send, hash it, and compare with `content_sha256` — equal means the
-published post already matches and you can skip the write. `source_path`
-survives later updates even if you do not resend it.
-
-To find the post for a given file, `list_posts` and match on `source_path`
-(bodies are not needed for this — leave `fetch_bodies=False`).
+Blogger has no usable per-post metadata field — `customMetaData` exists in the
+API but silently discards writes. So there is no marker on a post saying which
+document it came from. To find the post for a file, `list_posts` and match on
+the title, or keep your own mapping outside Blogger. Do not promise the user
+that re-running a sync will detect what changed.
 
 ## Drafts are not searchable
 
@@ -130,3 +119,5 @@ Do not attempt workarounds for these; say they are not possible:
 - Rename a label across the blog (only by patching each post individually)
 - Post or reply to comments
 - Per-post view counts (`get_pageviews` is blog-wide and approximate)
+- Store any metadata of your own on a post
+- Recover a deleted post
