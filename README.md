@@ -113,13 +113,36 @@ uv pip install -e .
 5. Save it as `~/.config/blogger-mcp/client_secret.json` (or point the
    `BLOGGER_MCP_CLIENT_SECRETS` environment variable at wherever you put it).
 
-> **Important — do not leave the consent screen in "Testing".** While an app is
-> in Testing status, Google expires its refresh tokens after **7 days**, so you
-> would have to re-authorize every week. On the OAuth consent screen, click
-> **Publish app** to move it to Production. An unverified app is fine for
-> personal use: the consent screen shows a "Google hasn't verified this app"
-> warning, and you continue via *Advanced → Go to (app name)*. Once in
-> Production the refresh token does not expire.
+> **Expect to re-authorize about once a week.** While an external app's
+> publishing status is **Testing**, Google issues refresh tokens that expire
+> after **7 days**. When that happens the server returns an error saying so;
+> run `blogger-mcp-auth` again. See below for why leaving Testing is harder
+> than it looks.
+
+#### About the 7-day expiry
+
+Testing status also means only accounts listed as **test users** on the consent
+screen can authorize at all (up to 100 of them), so add anyone who needs access
+there.
+
+Escaping the 7-day expiry means publishing the consent screen to Production,
+and Google requires an app homepage and a privacy policy to do that. Those have
+to be on a domain you own and have verified in Search Console — Google
+explicitly rules out platforms where you cannot prove you own the subdomain,
+which excludes a Blogger blog, GitHub Pages, Google Sites and similar. The
+Blogger scope is broad enough to count as sensitive, so a published app also
+shows a "Google hasn't verified this app" warning until it passes review, which
+wants a demo video and takes days to weeks.
+
+Google's documentation ties the 7-day expiry specifically to Testing status,
+which implies publishing alone is enough. Reports from developers of apps that
+are in Production but unverified are mixed, and this project has not tested it.
+Do not assume publishing will fix it.
+
+For a personal setup, re-authorizing weekly is usually less work than owning a
+domain to satisfy a review process. If you do want to go through with it, you
+need a real domain, a page describing the app, and a privacy policy on that
+same domain.
 
 ### 2. Authorize (once)
 
