@@ -4,5 +4,10 @@ __pycache__/
 dist/
 build/
 *.egg-info/
+.ruff_cache/
+.DS_Store
+
+# Credentials — never commit these. blogger-mcp reads them from
+# ~/.config/blogger-mcp/ by default, not from the project directory.
 client_secret*.json
 token.json
