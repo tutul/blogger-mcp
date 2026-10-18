@@ -15,7 +15,9 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
+from google.auth.exceptions import RefreshError, TransportError
 from googleapiclient.errors import HttpError
+from httplib2 import HttpLib2Error
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
@@ -78,6 +80,12 @@ def _call(method, **params) -> dict[str, Any]:
     Both steps sit inside the handler on purpose: googleapiclient validates
     enum arguments client-side while the request is *built*, and that TypeError
     would otherwise reach the caller as an opaque "error executing tool".
+
+    The same goes for failures that are not HTTP errors at all. When Google
+    rejects the access token mid-request, the client library refreshes it inside
+    execute() — so a revoked authorization surfaces here as RefreshError, never
+    passing through auth.py. A dropped connection surfaces as OSError or an
+    httplib2 error.
     """
     try:
         request = method(**params)
@@ -99,6 +107,16 @@ def _call(method, **params) -> dict[str, Any]:
         elif status == 429:
             hint = " (Blogger API quota exceeded — check quotas in Cloud Console)"
         raise ToolError(f"Blogger API error {status}: {detail}{hint}") from exc
+    except RefreshError as exc:
+        raise ToolError(
+            f"Google rejected the stored authorization ({exc}). It may have "
+            "expired or been revoked. Run `blogger-mcp-auth` to authorize again."
+        ) from exc
+    except (TransportError, HttpLib2Error, OSError) as exc:
+        raise ToolError(
+            f"Could not reach the Blogger API ({exc}). This is a network "
+            "problem, not an authorization one: check the connection and retry."
+        ) from exc
 
 
 def _render(content: str, content_format: str) -> str:

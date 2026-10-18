@@ -12,7 +12,7 @@ import os
 import sys
 from pathlib import Path
 
-from google.auth.exceptions import RefreshError
+from google.auth.exceptions import RefreshError, TransportError
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -77,6 +77,13 @@ def load_credentials() -> Credentials:
                 "days while an external app's publishing status is 'Testing'. "
                 "See the README for what your options are — there is no fix "
                 "on this side."
+            ) from exc
+        except TransportError as exc:
+            raise AuthError(
+                f"Could not reach Google to refresh the access token ({exc}).\n"
+                "This is a network problem, not an authorization one: check the "
+                "connection and try again. There is no need to re-run "
+                "`blogger-mcp-auth`."
             ) from exc
         _save(creds)
         return creds
