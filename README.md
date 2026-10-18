@@ -65,7 +65,7 @@ before you build a workflow on top of this.
 ### Undocumented API behaviour worth knowing
 
 These were found by running against a live blog. None of them appear in the
-reference documentation, and two fail silently:
+reference documentation, and three fail silently:
 
 - **`fetchBody=False` on a write destroys the post body.** It reads as a
   response-shaping option, and is one on `posts.get`. On `posts.insert` and
@@ -83,6 +83,11 @@ reference documentation, and two fail silently:
 - **`blogs.listByUser` rejects `view=ADMIN` with HTTP 400**, even though the
   API's own discovery document lists `ADMIN` as a valid value for that
   parameter. Every other resource accepts it.
+- **`posts.search` ignores whose blog it is.** It is the one read that takes
+  no `view` parameter, so it will search any public blog: a mistyped `blog_id`
+  that happens to belong to someone else returns their posts, with no error.
+  Every other read, given `view=ADMIN`, rejects that with HTTP 403. This
+  server checks admin access before searching for that reason.
 - **Enum values are UPPERCASE.** `orderBy=PUBLISHED`, `sortOption=DESCENDING`,
   comment `status=PENDING`. The HTML reference page documents several of them
   in lowercase, which the client library rejects outright.

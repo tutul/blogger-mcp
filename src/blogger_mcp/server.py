@@ -99,11 +99,15 @@ def _call(method, **params) -> dict[str, Any]:
         hint = ""
         if status == 403:
             hint = (
-                " (the authorized account may not be an admin of this blog, or "
-                "the Blogger API is not enabled for this Google Cloud project)"
+                " (the authorized account is not an admin of this blog — which "
+                "is also how a blog_id belonging to someone else reads — or the "
+                "Blogger API is not enabled for this Google Cloud project)"
             )
         elif status == 404:
-            hint = " (check blog_id / post_id — a wrong blog_id also reads as 404)"
+            hint = (
+                " (check the ids you passed — a blog_id that does not exist "
+                "also reads as 404)"
+            )
         elif status == 429:
             hint = " (Blogger API quota exceeded — check quotas in Cloud Console)"
         raise ToolError(f"Blogger API error {status}: {detail}{hint}") from exc
@@ -322,9 +326,13 @@ def search_posts(
     Note this only covers live posts; drafts are not indexed. To find a draft,
     use `list_posts` with `status="DRAFT"`.
     """
-    resp = _call(
-        _service().posts().search, blogId=blog_id, q=query, fetchBodies=fetch_bodies
-    )
+    svc = _service()
+    # posts.search takes no `view` parameter, so unlike every other read here it
+    # will search a blog this account does not administer: a mistyped blog_id
+    # that happens to be someone else's returns *their* posts, with no error.
+    # Checking access first turns that into the same 403 the other tools give.
+    _call(svc.blogs().get, blogId=blog_id, view=ADMIN)
+    resp = _call(svc.posts().search, blogId=blog_id, q=query, fetchBodies=fetch_bodies)
     build = _post_detail if fetch_bodies else _post_summary
     return _listing(resp, [build(p) for p in resp.get("items", [])])
 
