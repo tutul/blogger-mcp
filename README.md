@@ -61,10 +61,6 @@ before you build a workflow on top of this.
   the API schema and is documented as "The JSON meta-data for the Post", but
   Blogger discards writes to it — the value is already null in the insert
   response. There is no place to record which local file produced a post.
-- **No recoverable trash.** `posts.delete` accepts `useTrash`, but a post
-  deleted that way returns 404 on the next read and never appears under
-  `status=SOFT_TRASHED`. Treat every delete as final, and use `revert_post`
-  when you only want a post off the public blog.
 
 ### Undocumented API behaviour worth knowing
 
@@ -77,7 +73,13 @@ reference documentation, and two fail silently:
   error is returned. This server never sends it on a write.
 - **`customMetaData` is a no-op.** Writes are discarded silently; the value
   comes back null in the insert response itself.
-- **`useTrash` does not give you a recoverable post** (see above).
+- **Whether a delete goes to the trash depends on the post's state**, not
+  just on `useTrash`. Deleting a published or scheduled post with
+  `useTrash=true` moves it to `SOFT_TRASHED`, where `posts.revert` restores
+  it as a draft with its content. Deleting a draft removes it for good even
+  with `useTrash=true`. Deleting something already in the trash removes it
+  for good — so `delete` is not idempotent, and retrying one is not safe.
+  Pages behave the same way.
 - **`blogs.listByUser` rejects `view=ADMIN` with HTTP 400**, even though the
   API's own discovery document lists `ADMIN` as a valid value for that
   parameter. Every other resource accepts it.
@@ -214,9 +216,11 @@ required first step.
 Publishing is always a separate, explicit `publish_post` call. The intent is
 that "organize a document" and "put it on the public internet" are never the
 same action — which matters more than usual when the caller is a language
-model. Deleting is the one thing this server cannot make safe, since Blogger's
-trash is not reachable through the API, so `delete_post` is documented as final
-and `revert_post` is the reversible way to take a post down.
+model. Deletes report what actually happened — `delete_post` reads the post
+back afterwards and says whether it went to the trash (restorable with
+`revert_post`) or is gone for good, because that depends on the post's state at
+the time. `revert_post` remains the way to take a post down without risking
+anything.
 
 **Errors carry their remediation.** Anticipated failures are raised as
 `ToolError` so the message survives to the caller. Requests are built inside

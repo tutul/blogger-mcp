@@ -83,9 +83,18 @@ Prefer `revert_post` — it takes the post off the public blog but keeps
 everything, and is trivially undone by publishing again.
 
 Use `delete_post` only when the user actually wants it gone, and confirm first.
-There is no working undo: even the default `useTrash` delete returns 404 on the
-next read and never appears under `status="SOFT_TRASHED"`. `permanent=True`
-skips the trash entirely. Either way, treat a delete as final.
+Whether it can be undone depends on the post's state, and the result's
+`outcome` tells you which happened:
+
+* **`trashed`** — a published or scheduled post went to the trash.
+  `revert_post` brings it back as a draft with its content.
+* **`deleted`** — gone for good. This is what happens to a **draft**, to
+  anything deleted with `permanent=True`, and to a post that was **already in
+  the trash**.
+
+Never retry a `delete_post` to be safe: a second delete of a trashed post
+destroys it. Pages behave the same, but this server has no tool to restore a
+page — treat a page delete as final.
 
 ## There is no way to link a post back to a local file
 
@@ -120,4 +129,5 @@ Do not attempt workarounds for these; say they are not possible:
 - Post or reply to comments
 - Per-post view counts (`get_pageviews` is blog-wide and approximate)
 - Store any metadata of your own on a post
-- Recover a deleted post
+- Recover a deleted draft, or anything deleted with `permanent=True`
+- Restore a page from the trash (posts can be: `revert_post`)

@@ -119,6 +119,27 @@ def _call(method, **params) -> dict[str, Any]:
         ) from exc
 
 
+def _after_delete(getter, **ids) -> dict[str, Any]:
+    """Read a resource back after deleting it and say what actually happened.
+
+    What a delete does depends on the resource's state at the time (see
+    `delete_post`), so the tools report the observed outcome rather than
+    predicting it. The delete itself has already succeeded by this point, so a
+    failed read-back is reported, never raised.
+    """
+    try:
+        status = (getter(**ids, view=ADMIN).execute() or {}).get("status")
+    except HttpError as exc:
+        if exc.resp is not None and exc.resp.status == 404:
+            return {"outcome": "deleted", "recoverable": False}
+        return {"outcome": "unknown", "note": f"could not read back: {exc.reason}"}
+    except Exception as exc:  # noqa: BLE001 - the delete already went through
+        return {"outcome": "unknown", "note": f"could not read back: {exc}"}
+    if status == "SOFT_TRASHED":
+        return {"outcome": "trashed", "recoverable": True}
+    return {"outcome": "unknown", "note": f"still readable, status={status}"}
+
+
 def _render(content: str, content_format: str) -> str:
     try:
         return content_mod.render(content, content_format)
@@ -446,22 +467,30 @@ def revert_post(blog_id: str, post_id: str) -> dict[str, Any]:
 
     The content is kept; only its visibility changes. This is the safe way to
     pull a post down.
+
+    It also restores a post from the trash (status SOFT_TRASHED) — it comes
+    back as a draft with its content intact.
     """
     post = _call(_service().posts().revert, blogId=blog_id, postId=post_id)
     return _post_summary(post)
 
 
-@mcp.tool(annotations=_rw(destructive=True, idempotent=True))
+# Not idempotent: deleting a post that is already in the trash removes it for
+# good, so a client retrying a "safe" call would destroy a recoverable post.
+@mcp.tool(annotations=_rw(destructive=True))
 def delete_post(blog_id: str, post_id: str, permanent: bool = False) -> dict[str, Any]:
-    """Delete a post. Treat this as irreversible and confirm with a human first.
+    """Delete a post. Confirm with a human first.
 
-    `useTrash` is sent unless `permanent=True`, but it buys nothing you can act
-    on: a deleted post returns 404 and never shows up in a SOFT_TRASHED listing
-    (verified against the live API). Whether Blogger's own web UI can still
-    restore it is not something the API can tell you.
+    What happens depends on the post's current state — the result's `outcome`
+    reports which, read back from Blogger after the delete:
 
-    If the goal is to take a post off the public blog, use `revert_post`
-    instead — it keeps the content and is trivially undone by publishing again.
+    - Published or scheduled post: moved to the trash (`outcome: "trashed"`).
+      `revert_post` restores it as a draft with its content intact.
+    - Draft: removed for good (`outcome: "deleted"`), regardless of `permanent`.
+    - `permanent=True`, or a post that is already in the trash: removed for good.
+
+    If the goal is only to take a post off the public blog, use `revert_post`
+    instead — nothing is lost, and publishing again undoes it.
     """
     _call(
         _service().posts().delete,
@@ -469,18 +498,11 @@ def delete_post(blog_id: str, post_id: str, permanent: bool = False) -> dict[str
         postId=post_id,
         useTrash=not permanent,
     )
-    return {
-        "post_id": post_id,
-        "deleted": True,
-        "permanent": permanent,
-        "note": (
-            "Permanently deleted."
-            if permanent
-            else "Deleted with useTrash. The API cannot retrieve it afterwards "
-            "and it will not appear under status='SOFT_TRASHED'; only the "
-            "Blogger web UI might still have it."
-        ),
-    }
+    result = {"post_id": post_id, "permanent": permanent}
+    result.update(_after_delete(_service().posts().get, blogId=blog_id, postId=post_id))
+    if result["outcome"] == "trashed":
+        result["note"] = "In the trash. revert_post restores it as a draft."
+    return result
 
 
 # --------------------------------------------------------------------------
@@ -586,16 +608,25 @@ def update_page(
     return result
 
 
-@mcp.tool(annotations=_rw(destructive=True, idempotent=True))
+# Not idempotent, for the same reason as delete_post.
+@mcp.tool(annotations=_rw(destructive=True))
 def delete_page(blog_id: str, page_id: str, permanent: bool = False) -> dict[str, Any]:
-    """Delete a static page. Treat this as irreversible (see `delete_post`)."""
+    """Delete a static page. Confirm with a human first.
+
+    Behaves like `delete_post`: a published page goes to the trash, a draft
+    page or `permanent=True` removes it for good, and `outcome` in the result
+    says which happened. This server has no tool to restore a page from the
+    trash, so treat a page delete as final from the caller's side.
+    """
     _call(
         _service().pages().delete,
         blogId=blog_id,
         pageId=page_id,
         useTrash=not permanent,
     )
-    return {"page_id": page_id, "deleted": True, "permanent": permanent}
+    result = {"page_id": page_id, "permanent": permanent}
+    result.update(_after_delete(_service().pages().get, blogId=blog_id, pageId=page_id))
+    return result
 
 
 # --------------------------------------------------------------------------
