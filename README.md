@@ -92,6 +92,10 @@ The git history contains the isolation tests for each of these.
 
 ## Install
 
+Requires Python 3.11 or newer. 3.10 is not supported: it reached end of
+life in October 2026, and Google's client libraries have stopped releasing
+for it.
+
 ```bash
 uv venv
 uv pip install -e .
